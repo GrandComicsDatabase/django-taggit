@@ -160,11 +160,14 @@ class _TaggableManager(models.Manager):
             if not isinstance(t, self.through.tag_model())
         ])
         tag_objs = set(tags) - str_tags
-        # If str_tags has 0 elements Django actually optimizes that to not do a
-        # query.  Malcolm is very smart.
-        existing = self.through.tag_model().objects.filter(
-            name__in=str_tags
-        )
+        if len(str_tags) == 0:
+            existing = self.through.tag_model().objects.none()
+        else: # above check for length of str_tags avoids query here
+            regex_string = (r'(^' + '$|^'.join(str_tags) + '$)')\
+                           .replace('[', '\[').replace(']', '\]')
+            existing = self.through.tag_model().objects.filter(
+                name__regex=regex_string
+            )
         tag_objs.update(existing)
 
         for new_tag in str_tags - set(t.name for t in existing):
@@ -180,8 +183,11 @@ class _TaggableManager(models.Manager):
 
     @require_instance_manager
     def remove(self, *tags):
-        self.through.objects.filter(**self._lookup_kwargs()).filter(
-            tag__name__in=tags).delete()
+        if tags:
+            regex_string = (r'(^' + '$|^'.join(tags) + '$)')\
+                           .replace('[', '\[').replace(']', '\]')
+            self.through.objects.filter(**self._lookup_kwargs()).filter(
+                tag__name__regex=regex_string).delete()
 
     @require_instance_manager
     def clear(self):
