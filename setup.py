@@ -1,37 +1,41 @@
-import os
 from setuptools import setup, find_packages
 
-from taggit import VERSION
+import taggit
 
 
-f = open(os.path.join(os.path.dirname(__file__), 'README.txt'))
-readme = f.read()
-f.close()
+with open('README.rst') as f:
+    readme = f.read()
 
 setup(
     name='django-taggit',
-    version=".".join(map(str, VERSION)),
+    version='.'.join(str(i) for i in taggit.VERSION),
     description='django-taggit is a reusable Django application for simple tagging.',
     long_description=readme,
     author='Alex Gaynor',
     author_email='alex.gaynor@gmail.com',
     url='http://github.com/alex/django-taggit/tree/master',
-    packages=find_packages(),
-    zip_safe=False,
+    packages=find_packages(exclude=('tests*',)),
     package_data = {
         'taggit': [
             'locale/*/LC_MESSAGES/*',
         ],
     },
+    license='BSD',
     classifiers=[
-        'Development Status :: 4 - Beta',
+        'Development Status :: 5 - Production/Stable',
         'Environment :: Web Environment',
         'Intended Audience :: Developers',
         'License :: OSI Approved :: BSD License',
         'Operating System :: OS Independent',
         'Programming Language :: Python',
+        'Programming Language :: Python',
+        'Programming Language :: Python :: 2.6',
+        'Programming Language :: Python :: 2.7',
+        'Programming Language :: Python :: 3.2',
+        'Programming Language :: Python :: 3.3',
+        'Programming Language :: Python :: 3.4',
         'Framework :: Django',
     ],
-    test_suite='taggit.tests.runtests.runtests'
+    include_package_data=True,
+    zip_safe=False,
 )
-
