@@ -1,6 +1,7 @@
 from __future__ import unicode_literals
 
 import django
+from django import VERSION
 from django.contrib.contenttypes.models import ContentType
 from django.db import IntegrityError, models, transaction
 from django.db.models.query import QuerySet
@@ -112,11 +113,13 @@ class ItemBase(models.Model):
 
     @classmethod
     def tag_model(cls):
-        return _get_field(cls, 'tag').rel.to
+        field = _get_field(cls, 'tag')
+        return field.remote_field.model if VERSION >= (1, 9) else field.rel.to
 
     @classmethod
     def tag_relname(cls):
-        return _get_field(cls, 'tag').rel.related_name
+        field = _get_field(cls, 'tag')
+        return field.remote_field.related_name if VERSION >= (1, 9) else field.rel.related_name
 
     @classmethod
     def lookup_kwargs(cls, instance):
@@ -132,7 +135,7 @@ class ItemBase(models.Model):
 
 
 class TaggedItemBase(ItemBase):
-    tag = models.ForeignKey(Tag, related_name="%(app_label)s_%(class)s_items")
+    tag = models.ForeignKey(Tag, related_name="%(app_label)s_%(class)s_items", on_delete=models.CASCADE)
 
     class Meta:
         abstract = True
@@ -151,10 +154,10 @@ class TaggedItemBase(ItemBase):
         return cls.tag_model().objects.filter(**kwargs).distinct()
 
 
-class GenericTaggedItemBase(ItemBase):
-    object_id = models.IntegerField(verbose_name=_('Object id'), db_index=True)
+class CommonGenericTaggedItemBase(ItemBase):
     content_type = models.ForeignKey(
         ContentType,
+        on_delete=models.CASCADE,
         verbose_name=_('Content type'),
         related_name="%(app_label)s_%(class)s_tagged_items"
     )
@@ -196,6 +199,22 @@ class GenericTaggedItemBase(ItemBase):
         if extra_filters:
             kwargs.update(extra_filters)
         return cls.tag_model().objects.filter(**kwargs).distinct()
+
+
+class GenericTaggedItemBase(CommonGenericTaggedItemBase):
+    object_id = models.IntegerField(verbose_name=_('Object id'), db_index=True)
+
+    class Meta:
+        abstract = True
+
+
+if VERSION >= (1, 8):
+
+    class GenericUUIDTaggedItemBase(CommonGenericTaggedItemBase):
+        object_id = models.UUIDField(verbose_name=_('Object id'), db_index=True)
+
+        class Meta:
+            abstract = True
 
 
 class TaggedItem(GenericTaggedItemBase, TaggedItemBase):
