@@ -2,6 +2,7 @@ from __future__ import unicode_literals
 
 from functools import total_ordering
 from operator import attrgetter
+from re import escape as regex_escape
 
 from django import VERSION
 from django.conf import settings
@@ -210,8 +211,7 @@ class _TaggableManager(models.Manager):
             if len(str_tags) == 0:
                 existing = manager.none()
             else: # above check for length of str_tags avoids query here
-                regex_string = (r'(^' + '$|^'.join(str_tags) + '$)')\
-                              .replace('[', '\[').replace(']', '\]')
+                regex_string = r'(^' + '$|^'.join([regex_escape(tag) for tag in str_tags]) + '$)'
                 existing = manager.filter(name__regex=regex_string)
             tags_to_create = str_tags - {t.name for t in existing}
 
