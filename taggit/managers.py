@@ -234,9 +234,13 @@ class _TaggableManager(models.Manager):
                 except self.through.tag_model().DoesNotExist:
                     tags_to_create.append(name)
         else:
+            # One cannot rely on
+            #   manager.filter(name__in=str_tags, **tag_kwargs)
+            # since depending on the database setting, the search
+            # can be case insensitive. This should be safe in all cases.
             if len(str_tags) == 0:
                 existing = manager.none()
-            else: # above check for length of str_tags avoids query here
+            else:  # above check for length of str_tags avoids query here
                 regex_string = r'(^' + '$|^'.join([regex_escape(tag) for tag in str_tags]) + '$)'
                 existing = manager.filter(name__regex=regex_string)
             tags_to_create = str_tags - {t.name for t in existing}
@@ -309,8 +313,9 @@ class _TaggableManager(models.Manager):
 
         db = router.db_for_write(self.through, instance=self.instance)
 
+        # see comment in _to_tag_model_instances
         regex_string = (r'(^' + '$|^'.join(tags) + '$)')\
-                       .replace('[', '\[').replace(']', '\]')
+                       .replace(r'[', r'\[').replace(r']', r'\]')
         qs = (self.through._default_manager.using(db)
               .filter(**self._lookup_kwargs())
               .filter(tag__name__regex=regex_string))
