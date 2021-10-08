@@ -314,7 +314,7 @@ class _TaggableManager(models.Manager):
         db = router.db_for_write(self.through, instance=self.instance)
 
         # see comment in _to_tag_model_instances
-        regex_string = r'(^' + '$|^'.join([regex_escape(tag) for tag in str_tags]) + '$)'
+        regex_string = r'(^' + '$|^'.join([regex_escape(tag) for tag in tags]) + '$)'
         qs = (self.through._default_manager.using(db)
               .filter(**self._lookup_kwargs())
               .filter(tag__name__regex=regex_string))
