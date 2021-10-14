@@ -251,7 +251,8 @@ class _TaggableManager(models.Manager):
             if case_insensitive:
                 lookup = {"name__iexact": new_tag, **tag_kwargs}
             else:
-                lookup = {"name": new_tag, **tag_kwargs}
+                regex_string = r'(^' + regex_escape(new_tag) + '$)'
+                lookup = {"name__regex": regex_string, **tag_kwargs}
 
             tag, create = manager.get_or_create(**lookup, defaults={"name": new_tag})
             tag_objs.add(tag)
