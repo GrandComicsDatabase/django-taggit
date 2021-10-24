@@ -22,7 +22,7 @@ class Migration(migrations.Migration):
                 (
                     "name",
                     models.CharField(
-                        help_text="", unique=True, max_length=100, verbose_name="name"
+                        help_text="", max_length=100, verbose_name="name"
                     ),
                 ),
                 (
