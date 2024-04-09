@@ -1,8 +1,11 @@
+from io import StringIO
 from unittest import mock
 
+from django import VERSION as DJANGO_VERSION
 from django.contrib.contenttypes.models import ContentType
 from django.core import serializers
 from django.core.exceptions import ValidationError
+from django.core.management import call_command
 from django.db import IntegrityError, connection, models
 from django.test import RequestFactory, SimpleTestCase, TestCase
 from django.test.utils import override_settings
@@ -377,7 +380,7 @@ class TaggableManagerTestCase(BaseTaggingTestCase):
         apple.tags.add("red")
         send_mock.reset_mock()
 
-        apple.tags.set("red", clear=True)
+        apple.tags.set(["red"], clear=True)
 
         red_pk = self.tag_model.objects.get(name="red").pk
 
@@ -429,7 +432,7 @@ class TaggableManagerTestCase(BaseTaggingTestCase):
         apple.tags.add("green")
         send_mock.reset_mock()
 
-        apple.tags.set("red")
+        apple.tags.set(["red"])
 
         green_pk = self.tag_model.objects.get(name="green").pk
         red_pk = self.tag_model.objects.get(name="red").pk
@@ -518,7 +521,7 @@ class TaggableManagerTestCase(BaseTaggingTestCase):
         pear = self.food_model.objects.create(name="pear")
         #   1 query to see which tags exist
         #   1  query to check existing ids for sending m2m_changed signal
-        # + 4 queries to create the intermeidary things (including SELECTs, to
+        # + 4 queries to create the intermediary things (including SELECTs, to
         #     make sure we dont't double create.
         # + 4 for save points.
         queries = 10
@@ -588,8 +591,9 @@ class TaggableManagerTestCase(BaseTaggingTestCase):
         model_name = self.pet_model.__name__
         self.assertQuerysetEqual(
             pks,
-            ["<{}: kitty>".format(model_name), "<{}: cat>".format(model_name)],
+            [f"<{model_name}: kitty>", f"<{model_name}: cat>"],
             ordered=False,
+            transform=repr,
         )
 
     def test_exclude(self):
@@ -605,8 +609,9 @@ class TaggableManagerTestCase(BaseTaggingTestCase):
         model_name = self.food_model.__name__
         self.assertQuerysetEqual(
             pks,
-            ["<{}: pear>".format(model_name), "<{}: guava>".format(model_name)],
+            [f"<{model_name}: pear>", f"<{model_name}: guava>"],
             ordered=False,
+            transform=repr,
         )
 
     def test_multi_inheritance_similarity_by_tag(self):
@@ -915,11 +920,21 @@ class TaggableFormTestCase(BaseTaggingTestCase):
     food_model = Food
 
     def _get_form_str(self, form_str):
-        form_str %= {
-            "help_start": '<span class="helptext">',
-            "help_stop": "</span>",
-            "required": "required",
-        }
+        if DJANGO_VERSION >= (5, 0):
+            # Django defaults to div-based form rendering in 5.0
+            # https://github.com/django/django/commit/98756c685ee173bbd43f21ed0553f808be835ce5
+            # https://github.com/django/django/commit/232b60a21b951bd16b8c95b34fcbcbf3ecd89fca
+            form_str %= {
+                "help_start": '<div class="helptext">',
+                "help_stop": "</div>",
+                "required": "required",
+            }
+        else:
+            form_str %= {
+                "help_start": '<span class="helptext">',
+                "help_stop": "</span>",
+                "required": "required",
+            }
         return form_str
 
     def assertFormRenders(self, form, html):
@@ -929,11 +944,18 @@ class TaggableFormTestCase(BaseTaggingTestCase):
         self.assertEqual(list(self.form_class.base_fields), ["name", "tags"])
 
         f = self.form_class({"name": "apple", "tags": "green, red, yummy"})
-        self.assertFormRenders(
-            f,
-            """<tr><th><label for="id_name">Name:</label></th><td><input id="id_name" type="text" name="name" value="apple" maxlength="50" %(required)s /></td></tr>
-<tr><th><label for="id_tags">Tags:</label></th><td><input type="text" name="tags" value="green, red, yummy" id="id_tags" %(required)s /><br />%(help_start)sA comma-separated list of tags.%(help_stop)s</td></tr>""",
-        )
+        if DJANGO_VERSION >= (5, 0):
+            self.assertFormRenders(
+                f,
+                """<div><label for="id_name">Name:</label><input id="id_name" type="text" name="name" value="apple" maxlength="50" %(required)s /></div>
+    <div><label for="id_tags">Tags:</label>%(help_start)sA comma-separated list of tags.%(help_stop)s<input type="text" name="tags" value="green, red, yummy" id="id_tags" %(required)s /></div>""",
+            )
+        else:
+            self.assertFormRenders(
+                f,
+                """<tr><th><label for="id_name">Name:</label></th><td><input id="id_name" type="text" name="name" value="apple" maxlength="50" %(required)s /></td></tr>
+    <tr><th><label for="id_tags">Tags:</label></th><td><input type="text" name="tags" value="green, red, yummy" id="id_tags" %(required)s /><br />%(help_start)sA comma-separated list of tags.%(help_stop)s</td></tr>""",
+            )
         f.save()
         apple = self.food_model.objects.get(name="apple")
         self.assert_tags_equal(apple.tags.all(), ["green", "red", "yummy"])
@@ -950,27 +972,48 @@ class TaggableFormTestCase(BaseTaggingTestCase):
         self.assertFalse(f.is_valid())
 
         f = self.form_class(instance=apple)
-        self.assertFormRenders(
-            f,
-            """<tr><th><label for="id_name">Name:</label></th><td><input id="id_name" type="text" name="name" value="apple" maxlength="50" %(required)s /></td></tr>
-<tr><th><label for="id_tags">Tags:</label></th><td><input type="text" name="tags" value="delicious, green, red, yummy" id="id_tags" %(required)s /><br />%(help_start)sA comma-separated list of tags.%(help_stop)s</td></tr>""",
-        )
+        if DJANGO_VERSION >= (5, 0):
+            self.assertFormRenders(
+                f,
+                """<div><label for="id_name">Name:</label><input id="id_name" type="text" name="name" value="apple" maxlength="50" %(required)s /></div>
+    <div><label for="id_tags">Tags:</label>%(help_start)sA comma-separated list of tags.%(help_stop)s<input type="text" name="tags" value="delicious, green, red, yummy" id="id_tags" %(required)s /></div>""",
+            )
+        else:
+            self.assertFormRenders(
+                f,
+                """<tr><th><label for="id_name">Name:</label></th><td><input id="id_name" type="text" name="name" value="apple" maxlength="50" %(required)s /></td></tr>
+    <tr><th><label for="id_tags">Tags:</label></th><td><input type="text" name="tags" value="delicious, green, red, yummy" id="id_tags" %(required)s /><br />%(help_start)sA comma-separated list of tags.%(help_stop)s</td></tr>""",
+            )
 
         apple.tags.add("has,comma")
         f = self.form_class(instance=apple)
-        self.assertFormRenders(
-            f,
-            """<tr><th><label for="id_name">Name:</label></th><td><input id="id_name" type="text" name="name" value="apple" maxlength="50" %(required)s /></td></tr>
-<tr><th><label for="id_tags">Tags:</label></th><td><input type="text" name="tags" value="&quot;has,comma&quot;, delicious, green, red, yummy" id="id_tags" %(required)s /><br />%(help_start)sA comma-separated list of tags.%(help_stop)s</td></tr>""",
-        )
+        if DJANGO_VERSION >= (5, 0):
+            self.assertFormRenders(
+                f,
+                """<div><label for="id_name">Name:</label><input id="id_name" type="text" name="name" value="apple" maxlength="50" %(required)s /></div>
+    <div><label for="id_tags">Tags:</label>%(help_start)sA comma-separated list of tags.%(help_stop)s<input type="text" name="tags" value="&quot;has,comma&quot;, delicious, green, red, yummy" id="id_tags" %(required)s /></div>""",
+            )
+        else:
+            self.assertFormRenders(
+                f,
+                """<tr><th><label for="id_name">Name:</label></th><td><input id="id_name" type="text" name="name" value="apple" maxlength="50" %(required)s /></td></tr>
+    <tr><th><label for="id_tags">Tags:</label></th><td><input type="text" name="tags" value="&quot;has,comma&quot;, delicious, green, red, yummy" id="id_tags" %(required)s /><br />%(help_start)sA comma-separated list of tags.%(help_stop)s</td></tr>""",
+            )
 
         apple.tags.add("has space")
         f = self.form_class(instance=apple)
-        self.assertFormRenders(
-            f,
-            """<tr><th><label for="id_name">Name:</label></th><td><input id="id_name" type="text" name="name" value="apple" maxlength="50" %(required)s /></td></tr>
-<tr><th><label for="id_tags">Tags:</label></th><td><input type="text" name="tags" value="&quot;has space&quot;, &quot;has,comma&quot;, delicious, green, red, yummy" id="id_tags" %(required)s /><br />%(help_start)sA comma-separated list of tags.%(help_stop)s</td></tr>""",
-        )
+        if DJANGO_VERSION >= (5, 0):
+            self.assertFormRenders(
+                f,
+                """<div><label for="id_name">Name:</label><input id="id_name" type="text" name="name" value="apple" maxlength="50" %(required)s /></div>
+    <div><label for="id_tags">Tags:</label>%(help_start)sA comma-separated list of tags.%(help_stop)s<input type="text" name="tags" value="&quot;has space&quot;, &quot;has,comma&quot;, delicious, green, red, yummy" id="id_tags" %(required)s /></div>""",
+            )
+        else:
+            self.assertFormRenders(
+                f,
+                """<tr><th><label for="id_name">Name:</label></th><td><input id="id_name" type="text" name="name" value="apple" maxlength="50" %(required)s /></td></tr>
+    <tr><th><label for="id_tags">Tags:</label></th><td><input type="text" name="tags" value="&quot;has space&quot;, &quot;has,comma&quot;, delicious, green, red, yummy" id="id_tags" %(required)s /><br />%(help_start)sA comma-separated list of tags.%(help_stop)s</td></tr>""",
+            )
 
     def test_formfield(self):
         tm = TaggableManager(
@@ -1234,7 +1277,7 @@ class TagListViewTests(TestCase):
         self.strawberry.tags.add("red")
 
     def test_url_request_returns_view(self):
-        request = self.factory.get("/food/tags/{}/".format(self.slug))
+        request = self.factory.get(f"/food/tags/{self.slug}/")
         queryset = self.model.objects.all()
         response = tagged_object_list(request, self.slug, queryset)
         self.assertEqual(response.status_code, 200)
@@ -1245,7 +1288,7 @@ class TagListViewTests(TestCase):
         )
 
     def test_list_view_returns_single(self):
-        response = self.client.get("/food/tags/{}/".format(self.slug))
+        response = self.client.get(f"/food/tags/{self.slug}/")
         self.assertEqual(response.status_code, 200)
         self.assertIn(self.apple, response.context_data["object_list"])
         self.assertNotIn(self.strawberry, response.context_data["object_list"])
@@ -1274,3 +1317,10 @@ class OrderedTagsTest(TestCase):
             ["blue", "green", "orange", "red", "yellow"],
             list(obj.tags.values_list("name", flat=True)),
         )
+
+
+class PendingMigrationsTests(TestCase):
+    def test_taggit_has_no_pending_migrations(self):
+        out = StringIO()
+        call_command("makemigrations", "taggit", dry_run=True, stdout=out)
+        self.assertEqual(out.getvalue().strip(), "No changes detected in app 'taggit'")

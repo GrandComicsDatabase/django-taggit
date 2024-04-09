@@ -2,7 +2,7 @@ import uuid
 from operator import attrgetter
 from re import escape as regex_escape
 
-from django import VERSION
+import django
 from django.conf import settings
 from django.contrib.contenttypes.fields import GenericRelation
 from django.contrib.contenttypes.models import ContentType
@@ -15,6 +15,7 @@ from django.db.models.fields.related import (
     lazy_related_operation,
 )
 from django.db.models.query_utils import PathInfo
+from django.utils.functional import cached_property
 from django.utils.text import capfirst
 from django.utils.translation import gettext_lazy as _
 
@@ -33,6 +34,7 @@ class ExtraJoinRestriction:
     """
 
     contains_aggregate = False
+    contains_over_clause = False
 
     def __init__(self, alias, col, content_types):
         self.alias = alias
@@ -42,7 +44,7 @@ class ExtraJoinRestriction:
     def as_sql(self, compiler, connection):
         qn = compiler.quote_name_unless_alias
         if len(self.content_types) == 1:
-            extra_where = "{}.{} = %s".format(qn(self.alias), qn(self.col))
+            extra_where = f"{qn(self.alias)}.{qn(self.col)} = %s"
         else:
             extra_where = "{}.{} IN ({})".format(
                 qn(self.alias), qn(self.col), ",".join(["%s"] * len(self.content_types))
@@ -130,30 +132,26 @@ class _TaggableManager(models.Manager):
         else:
             rel_obj_attr = attrgetter("_prefetch_related_val")
 
-        if VERSION < (2, 0):
-            return (
-                qs,
-                rel_obj_attr,
-                lambda obj: obj._get_pk_val(),
-                False,
-                self.prefetch_cache_name,
-            )
-        else:
-            return (
-                qs,
-                rel_obj_attr,
-                lambda obj: obj._get_pk_val(),
-                False,
-                self.prefetch_cache_name,
-                False,
-            )
+        return (
+            qs,
+            rel_obj_attr,
+            lambda obj: obj._get_pk_val(),
+            False,
+            self.prefetch_cache_name,
+            False,
+        )
 
     def _lookup_kwargs(self):
         return self.through.lookup_kwargs(self.instance)
 
+    def _remove_prefetched_objects(self):
+        prefetch_cache = getattr(self.instance, "_prefetched_objects_cache", None)
+        if prefetch_cache:
+            prefetch_cache.pop(self.prefetch_cache_name, None)
+
     @require_instance_manager
     def add(self, *tags, through_defaults=None, tag_kwargs=None, **kwargs):
-
+        self._remove_prefetched_objects()
         if tag_kwargs is None:
             tag_kwargs = {}
         db = router.db_for_write(self.through, instance=self.instance)
@@ -268,7 +266,7 @@ class _TaggableManager(models.Manager):
         return self.get_queryset().values_list("slug", flat=True)
 
     @require_instance_manager
-    def set(self, *tags, through_defaults=None, **kwargs):
+    def set(self, tags, *, through_defaults=None, **kwargs):
         """
         Set the object's tags to the given n tags. If the clear kwarg is True
         then all existing tags are removed (using `.clear()`) and the new tags
@@ -312,6 +310,7 @@ class _TaggableManager(models.Manager):
         if not tags:
             return
 
+        self._remove_prefetched_objects()
         db = router.db_for_write(self.through, instance=self.instance)
 
         # see comment in _to_tag_model_instances
@@ -344,6 +343,7 @@ class _TaggableManager(models.Manager):
 
     @require_instance_manager
     def clear(self):
+        self._remove_prefetched_objects()
         db = router.db_for_write(self.through, instance=self.instance)
 
         signals.m2m_changed.send(
@@ -560,7 +560,7 @@ class TaggableManager(RelatedField):
                 )
 
     def save_form_data(self, instance, value):
-        getattr(instance, self.name).set(*value)
+        getattr(instance, self.name).set(value)
 
     def formfield(self, form_class=TagField, **kwargs):
         defaults = {
@@ -606,21 +606,24 @@ class TaggableManager(RelatedField):
         pathinfos = []
         linkfield1 = self.through._meta.get_field("content_object")
         linkfield2 = self.through._meta.get_field(self.m2m_reverse_field_name())
-        if direct:
-            if VERSION < (2, 0):
-                join1infos = linkfield1.get_reverse_path_info()
-                join2infos = linkfield2.get_path_info()
+        if django.VERSION >= (4, 1) and not filtered_relation:
+            # Django >= 4.1 provides cached path_infos and reverse_path_infos properties
+            # to use in preference to get_path_info / get_reverse_path_info when not
+            # passing a filtered_relation
+            if direct:
+                join1infos = linkfield1.reverse_path_infos
+                join2infos = linkfield2.path_infos
             else:
+                join1infos = linkfield2.reverse_path_infos
+                join2infos = linkfield1.path_infos
+        else:
+            if direct:
                 join1infos = linkfield1.get_reverse_path_info(
                     filtered_relation=filtered_relation
                 )
                 join2infos = linkfield2.get_path_info(
                     filtered_relation=filtered_relation
                 )
-        else:
-            if VERSION < (2, 0):
-                join1infos = linkfield2.get_reverse_path_info()
-                join2infos = linkfield1.get_path_info()
             else:
                 join1infos = linkfield2.get_reverse_path_info(
                     filtered_relation=filtered_relation
@@ -638,54 +641,41 @@ class TaggableManager(RelatedField):
         opts = self.through._meta
         linkfield = self.through._meta.get_field(self.m2m_reverse_field_name())
         if direct:
-            if VERSION < (2, 0):
-                join1infos = [
-                    PathInfo(
-                        self.model._meta,
-                        opts,
-                        [from_field],
-                        self.remote_field,
-                        True,
-                        False,
-                    )
-                ]
-                join2infos = linkfield.get_path_info()
+            join1infos = [
+                PathInfo(
+                    self.model._meta,
+                    opts,
+                    [from_field],
+                    self.remote_field,
+                    True,
+                    False,
+                    filtered_relation,
+                )
+            ]
+            if django.VERSION >= (4, 1) and not filtered_relation:
+                join2infos = linkfield.path_infos
             else:
-                join1infos = [
-                    PathInfo(
-                        self.model._meta,
-                        opts,
-                        [from_field],
-                        self.remote_field,
-                        True,
-                        False,
-                        filtered_relation,
-                    )
-                ]
                 join2infos = linkfield.get_path_info(
                     filtered_relation=filtered_relation
                 )
         else:
-            if VERSION < (2, 0):
-                join1infos = linkfield.get_reverse_path_info()
-                join2infos = [
-                    PathInfo(opts, self.model._meta, [from_field], self, True, False)
-                ]
+            if django.VERSION >= (4, 1) and not filtered_relation:
+                join1infos = linkfield.reverse_path_infos
             else:
                 join1infos = linkfield.get_reverse_path_info(
                     filtered_relation=filtered_relation
                 )
-                join2infos = [
-                    PathInfo(
-                        opts,
-                        self.model._meta,
-                        [from_field],
-                        self,
-                        True,
-                        False,
-                        filtered_relation,
-                    )
-                ]
+            join2infos = [
+                PathInfo(
+                    opts,
+                    self.model._meta,
+                    [from_field],
+                    self,
+                    True,
+                    False,
+                    filtered_relation,
+                )
+            ]
         pathinfos.extend(join1infos)
         pathinfos.extend(join2infos)
         return pathinfos
@@ -700,6 +690,10 @@ class TaggableManager(RelatedField):
                 direct=True, filtered_relation=filtered_relation
             )
 
+    @cached_property
+    def path_infos(self):
+        return self.get_path_info()
+
     def get_reverse_path_info(self, filtered_relation=None):
         if self.use_gfk:
             return self._get_gfk_case_path_info(
@@ -710,13 +704,35 @@ class TaggableManager(RelatedField):
                 direct=False, filtered_relation=filtered_relation
             )
 
+    @cached_property
+    def reverse_path_infos(self):
+        return self.get_reverse_path_info()
+
     def get_joining_columns(self, reverse_join=False):
+        # RemovedInDjango60Warning
+        # https://github.com/django/django/commit/8b1ff0da4b162e87edebd94e61f2cd153e9e159d
         if reverse_join:
             return ((self.model._meta.pk.column, "object_id"),)
         else:
             return (("object_id", self.model._meta.pk.column),)
 
-    def get_extra_restriction(self, where_class, alias, related_alias):
+    def get_joining_fields(self, reverse_join=False):
+        if reverse_join:
+            return (
+                (
+                    self.model._meta.pk,
+                    self.remote_field.through._meta.get_field("object_id"),
+                ),
+            )
+        else:
+            return (
+                (
+                    self.remote_field.through._meta.get_field("object_id"),
+                    self.model._meta.pk,
+                ),
+            )
+
+    def _get_extra_restriction(self, alias, related_alias):
         extra_col = self.through._meta.get_field("content_type").column
         content_type_ids = [
             ContentType.objects.get_for_model(subclass).pk
@@ -724,8 +740,25 @@ class TaggableManager(RelatedField):
         ]
         return ExtraJoinRestriction(related_alias, extra_col, content_type_ids)
 
+    def _get_extra_restriction_legacy(self, where_class, alias, related_alias):
+        # this is a shim to maintain compatibility with django < 4.0
+        return self._get_extra_restriction(alias, related_alias)
+
+    # this is required to handle a change in Django 4.0
+    # https://docs.djangoproject.com/en/4.0/releases/4.0/#miscellaneous
+    # the signature of the (private) function was changed
+    if django.VERSION < (4, 0):
+        get_extra_restriction = _get_extra_restriction_legacy
+    else:
+        get_extra_restriction = _get_extra_restriction
+
     def get_reverse_joining_columns(self):
+        # RemovedInDjango60Warning
+        # https://github.com/django/django/commit/8b1ff0da4b162e87edebd94e61f2cd153e9e159d
         return self.get_joining_columns(reverse_join=True)
+
+    def get_reverse_joining_fields(self):
+        return self.get_joining_fields(reverse_join=True)
 
     @property
     def related_fields(self):

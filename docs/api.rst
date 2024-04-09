@@ -36,7 +36,7 @@ playing around with the API.
 
         Removes all tags from an object.
 
-    .. method:: set(*tags, through_defaults=None, clear=False)
+    .. method:: set(tags, *, through_defaults=None, clear=False)
 
         If ``clear = True`` removes all the current tags and then adds the
         specified tags to the object. Otherwise sets the object's tags to those
@@ -72,7 +72,7 @@ playing around with the API.
         just an iterable) containing the name of each tag as a string::
 
             >>> apple.tags.names()
-            [u'green and juicy', u'red']
+            ["green and juicy", "red"]
 
     .. method:: slugs()
 
@@ -80,7 +80,7 @@ playing around with the API.
         just an iterable) containing the slug of each tag as a string::
 
             >>> apple.tags.slugs()
-            [u'green-and-juicy', u'red']
+            ["green-and-juicy", "red"]
 
     .. hint::
 

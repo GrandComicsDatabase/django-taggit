@@ -4,8 +4,66 @@ Changelog
 (Unreleased)
 ~~~~~~~~~~~~
 
+4.0.0 (2023-05-04)
+~~~~~~~~~~~~~~~~~~
+* Remove Python 3.6 support (no code changes occurred, but we no longer test this release).
+* Remove Django 4.0 support (no code changes occurred, but we no longer test this release).
+* Add Django 4.2 support.
+
+3.1.0 (2022-11-08)
+~~~~~~~~~~~~~~~~~~
+
+* Add Python 3.11 support (no code changes were needed, but now we test this release).
+* Add Django 4.1 support (no code changes were needed, but now we test this release).
+* Fixed an issue where object caches would not be properly cleared after updating tags, leading
+  to stale reads in cases where ``prefetch_related`` is used.
+* Change ``TagListSerializerField`` to be a subclass of ``ListField``. This should improve support for API document generation. This change should not affect API behavior, but might affect metaprogramming code, so please procede carefully during this update.
+
+3.0.0 (2022-05-02)
+~~~~~~~~~~~~~~~~~~
+
+* **Backwards incompatible:** Tag slugification used to silently strip non-ASCII characters
+  from the tag name to make the slug. This leads to a lot of confusion for anyone using
+  languages with non-latin alphabets, as well as weird performance issues.
+
+  Tag slugification will now, by default, maintain unicode characters as-is during
+  slugification. This will lead to less surprises, but might cause issues for you if you are
+  expecting all of your tag slugs to fit within a regex like ``[a-zA-Z0-9]`` (for example in
+  URL routing configurations).
+
+  Generally speaking, this should not require action on your part as a library user, as
+  existing tag slugs are persisted in the database, and only new tags will receive the
+  enhanced unicode-compatible slug.
+
+  If you wish to maintain the old stripping behavior, set the setting
+  ``TAGGIT_STRIP_UNICODE_WHEN_SLUGIFYING`` to ``True``.
+
+  As a reminder, custom tag models can easily customize slugification behavior by overriding
+  the ``slugify`` method to your business needs.
+
+`` Drop Django 2.2 support.
+
+2.1.0 (2022-01-24)
+~~~~~~~~~~~~~~~~~~
+
+* Add Python 3.10 support.
+* Add Django 4.0 support.
+* Drop Django 3.1 support.
+
+
+2.0.0 (2021-11-14)
+~~~~~~~~~~~~~~~~~~
+
+* **Backwards incompatible:** ``TaggableManager.set`` now takes a list of tags
+  (instead of varargs) so that its API matches Django's ``RelatedManager.set``. Example:
+
+  - previously: ``item.tags.set("red", "blue")``
+  - now: ``item.tags.set(["red", "blue"])``
+
 * Fix issue where ``TagField`` would incorrectly report that a field has changed on empty values.
 * Update Russian translation.
+* Add Persian translation
+* Fix issue for many languages where content types were not being properly translated.
 * Provide translators additional context regarding strings in TagBase model.
 
 
