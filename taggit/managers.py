@@ -2,10 +2,10 @@ import uuid
 from operator import attrgetter
 from re import escape as regex_escape
 
-import django
 from django.conf import settings
 from django.contrib.contenttypes.fields import GenericRelation
 from django.contrib.contenttypes.models import ContentType
+from django.core.exceptions import MultipleObjectsReturned
 from django.db import connections, models, router
 from django.db.models import signals
 from django.db.models.fields.related import (
@@ -67,8 +67,17 @@ class _TaggableManager(models.Manager):
         self.model = model
         self.instance = instance
         self.prefetch_cache_name = prefetch_cache_name
-        if ordering:
+
+        if ordering is not None:
             self.ordering = ordering
+        elif instance:
+            # When working off an instance (i.e. instance.tags.all())
+            # we default to ordering by the PK of the through table
+            #
+            # (This ordering does not apply for queries at the model
+            #  level, i.e. Model.tags.all())
+            related_name = self.through.tag.field.related_query_name()
+            self.ordering = [f"{related_name}__pk"]
         else:
             self.ordering = []
 
@@ -85,8 +94,19 @@ class _TaggableManager(models.Manager):
             )
 
     def get_prefetch_queryset(self, instances, queryset=None):
-        if queryset is not None:
-            raise ValueError("Custom queryset can't be used for this lookup.")
+        if queryset is None:
+            return self.get_prefetch_querysets(instances)
+        else:
+            return self.get_prefetch_querysets(instances, [queryset])
+
+    def get_prefetch_querysets(self, instances, querysets=None):
+        if querysets is not None:
+            # this queryset is meant to be used for filtering down the prefetch
+            # this work has not been done yet.
+            #
+            # Some hint from Django: asserting that len(querysets) == 1 if it's not None
+            # and then using that to filter down the qs
+            raise ValueError("Custom querysets can't be used for this lookup.")
 
         instance = instances[0]
         db = self._db or router.db_for_read(type(instance), instance=instance)
@@ -197,18 +217,94 @@ class _TaggableManager(models.Manager):
     def _to_tag_model_instances(self, tags, tag_kwargs):
         """
         Takes an iterable containing either strings, tag objects, or a mixture
-        of both and returns set of tag objects.
+        of both and returns a list of tag objects while preserving order.
         """
         db = router.db_for_write(self.through, instance=self.instance)
 
-        str_tags = set()
-        tag_objs = set()
+        case_insensitive = getattr(settings, "TAGGIT_CASE_INSENSITIVE", False)
+        manager = self.through.tag_model()._default_manager.using(db)
 
+        # tags can be instances of our through models, or strings
+
+        tag_strs = [tag for tag in tags if isinstance(tag, str)]
+        # This map from tag names to tags lets us handle deduplication
+        # without doing extra queries along the way, all while relying on
+        # data we were going to pull out of the database anyways
+        # existing_tags_for_str[tag_name] = tag
+        existing_tags_for_str = {}
+        # we are going to first try and lookup existing tags (in a single query)
+        if case_insensitive:
+            # Some databases can do case-insensitive comparison with IN, which
+            # would be faster, but we can't rely on it or easily detect it
+            existing = []
+            tags_to_create = []
+            for name in tag_strs:
+                try:
+                    tag = manager.get(name__iexact=name, **tag_kwargs)
+                    existing_tags_for_str[name] = tag
+                except self.through.tag_model().DoesNotExist:
+                    tags_to_create.append(name)
+                except MultipleObjectsReturned:
+                    tag = (
+                        manager.filter(name__iexact=name, **tag_kwargs)
+                        .order_by("pk")
+                        .first()
+                    )
+                    existing_tags_for_str[name] = tag
+        else:
+            # One cannot rely on
+            #   existing = manager.filter(name__in=tag_strs, **tag_kwargs)
+            # since depending on the database setting, the search
+            # can be case insensitive. This should be safe in all cases.
+            if len(tag_strs) == 0:
+                existing = manager.none()
+            else:  # above check for length of tag_strs avoids query here
+                regex_string = r'(^' + '$|^'.join([regex_escape(tag) for tag in tag_strs]) + '$)'
+                existing = manager.filter(name__regex=regex_string)
+            tags_to_create = tag_strs - {t.name for t in existing}
+            # we're going to end up doing this query anyways, so here is fine
+            for t in existing:
+                existing_tags_for_str[t.name] = t
+
+        result = []
+        # this set is used for deduplicating tags
+        seen_tags = set()
         for t in tags:
             if isinstance(t, self.through.tag_model()):
-                tag_objs.add(t)
+                if t not in seen_tags:
+                    seen_tags.add(t)
+                    result.append(t)
             elif isinstance(t, str):
-                str_tags.add(t)
+                # we are using a string, so either the tag exists (and we have the lookup)
+                # or we need to create the value
+
+                existing_tag = existing_tags_for_str.get(t, None)
+                if existing_tag is None:
+                    if existing_tag not in tags_to_create:
+                        # should not happen
+                        raise ValueError(
+                            "Tag lookup failed for {}. This is likely a bug.".format(
+                                t
+                            )
+                        )
+                    # we need to create a tag
+                    # (we use get_or_create to handle potential races)
+                    if case_insensitive:
+                        lookup = {"name__iexact": t, **tag_kwargs}
+                    else:
+                        regex_string = r'(^' + regex_escape(new_tag) + '$)'
+                        lookup = {"name__regex": regex_string, **tag_kwargs}
+                        # lookup = {"name": t, **tag_kwargs}
+                    existing_tag, _ = manager.get_or_create(
+                        **lookup, defaults={"name": t}
+                    )
+                # we now have an existing tag for this string
+
+                # confirm if we've seen it or not (this is where case insensitivity comes
+                # into play)
+                if existing_tag not in seen_tags:
+                    seen_tags.add(existing_tag)
+                    result.append(existing_tag)
             else:
                 raise ValueError(
                     "Cannot add {} ({}). Expected {} or str.".format(
@@ -216,46 +312,7 @@ class _TaggableManager(models.Manager):
                     )
                 )
 
-        case_insensitive = getattr(settings, "TAGGIT_CASE_INSENSITIVE", False)
-        manager = self.through.tag_model()._default_manager.using(db)
-
-        if case_insensitive:
-            # Some databases can do case-insensitive comparison with IN, which
-            # would be faster, but we can't rely on it or easily detect it.
-            existing = []
-            tags_to_create = []
-
-            for name in str_tags:
-                try:
-                    tag = manager.get(name__iexact=name)
-                    existing.append(tag)
-                except self.through.tag_model().DoesNotExist:
-                    tags_to_create.append(name)
-        else:
-            # One cannot rely on
-            #   manager.filter(name__in=str_tags, **tag_kwargs)
-            # since depending on the database setting, the search
-            # can be case insensitive. This should be safe in all cases.
-            if len(str_tags) == 0:
-                existing = manager.none()
-            else:  # above check for length of str_tags avoids query here
-                regex_string = r'(^' + '$|^'.join([regex_escape(tag) for tag in str_tags]) + '$)'
-                existing = manager.filter(name__regex=regex_string)
-            tags_to_create = str_tags - {t.name for t in existing}
-
-        tag_objs.update(existing)
-
-        for new_tag in tags_to_create:
-            if case_insensitive:
-                lookup = {"name__iexact": new_tag, **tag_kwargs}
-            else:
-                regex_string = r'(^' + regex_escape(new_tag) + '$)'
-                lookup = {"name__regex": regex_string, **tag_kwargs}
-
-            tag, create = manager.get_or_create(**lookup, defaults={"name": new_tag})
-            tag_objs.add(tag)
-
-        return tag_objs
+        return result
 
     @require_instance_manager
     def names(self):
@@ -606,7 +663,7 @@ class TaggableManager(RelatedField):
         pathinfos = []
         linkfield1 = self.through._meta.get_field("content_object")
         linkfield2 = self.through._meta.get_field(self.m2m_reverse_field_name())
-        if django.VERSION >= (4, 1) and not filtered_relation:
+        if not filtered_relation:
             # Django >= 4.1 provides cached path_infos and reverse_path_infos properties
             # to use in preference to get_path_info / get_reverse_path_info when not
             # passing a filtered_relation
@@ -652,14 +709,14 @@ class TaggableManager(RelatedField):
                     filtered_relation,
                 )
             ]
-            if django.VERSION >= (4, 1) and not filtered_relation:
+            if not filtered_relation:
                 join2infos = linkfield.path_infos
             else:
                 join2infos = linkfield.get_path_info(
                     filtered_relation=filtered_relation
                 )
         else:
-            if django.VERSION >= (4, 1) and not filtered_relation:
+            if not filtered_relation:
                 join1infos = linkfield.reverse_path_infos
             else:
                 join1infos = linkfield.get_reverse_path_info(
@@ -732,25 +789,13 @@ class TaggableManager(RelatedField):
                 ),
             )
 
-    def _get_extra_restriction(self, alias, related_alias):
+    def get_extra_restriction(self, alias, related_alias):
         extra_col = self.through._meta.get_field("content_type").column
         content_type_ids = [
             ContentType.objects.get_for_model(subclass).pk
             for subclass in _get_subclasses(self.model)
         ]
         return ExtraJoinRestriction(related_alias, extra_col, content_type_ids)
-
-    def _get_extra_restriction_legacy(self, where_class, alias, related_alias):
-        # this is a shim to maintain compatibility with django < 4.0
-        return self._get_extra_restriction(alias, related_alias)
-
-    # this is required to handle a change in Django 4.0
-    # https://docs.djangoproject.com/en/4.0/releases/4.0/#miscellaneous
-    # the signature of the (private) function was changed
-    if django.VERSION < (4, 0):
-        get_extra_restriction = _get_extra_restriction_legacy
-    else:
-        get_extra_restriction = _get_extra_restriction
 
     def get_reverse_joining_columns(self):
         # RemovedInDjango60Warning

@@ -4,6 +4,46 @@ Changelog
 (Unreleased)
 ~~~~~~~~~~~~
 
+6.1.0 (2024-09-29)
+~~~~~~~~~~~~~~~~~~
+
+* Add a management command (``remove_orphaned_tags``) to remove orphaned tags
+* Add a fallback for when multiple tags are found in case-insensitivity mode (the earliest by PK is returned)
+* Add a ``deduplicate_tags`` management command to remove duplicate tags based on case insensitivity. This feature is enabled when ``TAGGIT_CASE_INSENSITIVE`` is set to ``True`` in the settings.
+* We no longer package tests, docs, or the sample taggit app into the distributed wheels. While we believe this shouldn't affect anything for users of the library, please tell us if you find yourself hitting issues (like around import errors)
+* Fix missing template file for admin merge tag action
+
+6.0.0 (2024-07-27)
+~~~~~~~~~~~~~~~~~~
+
+* By default, order tag items on instances by the primary key. This generally means that they will be ordered by "creation date" for the tag item.
+  The previous behavior for this was that by default tag items were not ordered. In practice tag items often end up ordered by creation date anyways, just due to how databases work, but this was not a guarantee.
+  If you wish to have the old behavior, set ``ordering=[]`` to your ``TaggableManager`` instance.
+  We believe that this should not cause a noticable performance change, and the number of queries involved should not change.
+* Added the ability to merge tags via the admin
+* Add Django 5.0 support (no code changes were needed, but now we test this release).
+* Add Python 3.12 support
+* Add support for dumpdata/loaddata using natural keys
+
+5.0.1 (2023-10-26)
+~~~~~~~~~~~~~~~~~~
+
+* Fix the package metadata to properly reflect the right Django and Python version requirements
+  Release 5.0.0 improperly stated its Django bounds as >=3.2, so people installing without bounds will end up on a version that won't work.
+
+5.0.0 (2023-10-24)
+~~~~~~~~~~~~~~~~~~
+* **Backwards icompatible:** Rename the (``content_type``, ``object_id``) index on ``TaggedItem``.
+  It is very unlikely for this to affect your code itself, and a migration will rename the index. This should not cause any downtime according to my research (Postgres does not lock the table for index renames, and Oracle holds a tiny lock to do it, and the change is only to the metadata, so is not dependent on table size).
+
+* **Backwards incompatible:** Remove the ``.index_together`` and ``.unique_together`` attributes on ``TaggedItem``
+
+  We are instead using ``constraints`` and ``indexes`` to set up these properties.
+* Remove support for Django 3.2.
+* Remove usage of deprecated APIs for Django 4.2
+* Remove support for Python 3.7 (no code changes involved)
+* Fix ``tag_kwargs`` and ``TAGGIT_CASE_INSENSITIVE=True`` discrepency.
+
 4.0.0 (2023-05-04)
 ~~~~~~~~~~~~~~~~~~
 * Remove Python 3.6 support (no code changes occurred, but we no longer test this release).

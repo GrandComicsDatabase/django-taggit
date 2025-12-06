@@ -1,3 +1,4 @@
+import os
 from io import StringIO
 from unittest import mock
 
@@ -57,6 +58,9 @@ from .models import (
     TaggedCustomPKFood,
     TaggedFood,
     TaggedTrackedFood,
+    TenantModel,
+    TenantTag,
+    TestModel,
     TrackedTag,
     UUIDFood,
     UUIDHousePet,
@@ -64,6 +68,9 @@ from .models import (
     UUIDTag,
     UUIDTaggedItem,
 )
+
+if DJANGO_VERSION < (4, 2):
+    TestCase.assertQuerySetEqual = TestCase.assertQuerysetEqual
 
 
 class BaseTaggingTestCase(TestCase):
@@ -589,7 +596,7 @@ class TaggableManagerTestCase(BaseTaggingTestCase):
 
         pks = self.pet_model.objects.filter(tags__name__in=["fuzzy"])
         model_name = self.pet_model.__name__
-        self.assertQuerysetEqual(
+        self.assertQuerySetEqual(
             pks,
             [f"<{model_name}: kitty>", f"<{model_name}: cat>"],
             ordered=False,
@@ -607,7 +614,7 @@ class TaggableManagerTestCase(BaseTaggingTestCase):
 
         pks = self.food_model.objects.exclude(tags__name__in=["red"])
         model_name = self.food_model.__name__
-        self.assertQuerysetEqual(
+        self.assertQuerySetEqual(
             pks,
             [f"<{model_name}: pear>", f"<{model_name}: guava>"],
             ordered=False,
@@ -842,6 +849,42 @@ class TaggableManagerUUIDTestCase(TaggableManagerTestCase):
         pass
 
 
+class TenantTagTestCase(TestCase):
+    model = TenantModel
+    tag_model = TenantTag
+
+    def test_tenant_tag(self):
+        tenant_1 = self.model.objects.create(name="tenant 1")
+        tenant_2 = self.model.objects.create(name="tenant 2")
+
+        # tenant 1 tags
+        tenant_1.tags.add("foo", "bar", tag_kwargs={"tenant_id": 1})
+
+        # tenant 2 tags
+        tenant_2.tags.add("foo", "baz", tag_kwargs={"tenant_id": 2})
+
+        # We should end up with 4 tags
+        self.assertEqual(self.tag_model.objects.all().count(), 4)
+        self.assertEqual(tenant_1.tags.count(), 2)
+        self.assertEqual(tenant_2.tags.count(), 2)
+
+    @override_settings(TAGGIT_CASE_INSENSITIVE=True)
+    def test_tenant_tag_insensitive(self):
+        tenant_1 = self.model.objects.create(name="tenant 1")
+        tenant_2 = self.model.objects.create(name="tenant 2")
+
+        # tenant 1 tags
+        tenant_1.tags.add("foo", "bar", tag_kwargs={"tenant_id": 1})
+
+        # tenant 2 tags
+        tenant_2.tags.add("foo", "baz", tag_kwargs={"tenant_id": 2})
+
+        # We should end up with 4 tags
+        self.assertEqual(self.tag_model.objects.all().count(), 4)
+        self.assertEqual(tenant_1.tags.count(), 2)
+        self.assertEqual(tenant_2.tags.count(), 2)
+
+
 class TaggableManagerOfficialTestCase(TaggableManagerTestCase):
     food_model = OfficialFood
     pet_model = OfficialPet
@@ -925,20 +968,23 @@ class TaggableFormTestCase(BaseTaggingTestCase):
             # https://github.com/django/django/commit/98756c685ee173bbd43f21ed0553f808be835ce5
             # https://github.com/django/django/commit/232b60a21b951bd16b8c95b34fcbcbf3ecd89fca
             form_str %= {
-                "help_start": '<div class="helptext">',
+                "help_start": '<div class="helptext" id="id_tags_helptext">',
                 "help_stop": "</div>",
                 "required": "required",
+                "aria": 'aria-describedby="id_tags_helptext"',
             }
         else:
             form_str %= {
                 "help_start": '<span class="helptext">',
                 "help_stop": "</span>",
                 "required": "required",
+                "aria": "",
             }
         return form_str
 
     def assertFormRenders(self, form, html):
-        self.assertHTMLEqual(str(form), self._get_form_str(html))
+        rendered_form = form.as_table() if DJANGO_VERSION < (5, 0) else form.as_div()
+        self.assertHTMLEqual(rendered_form, self._get_form_str(html))
 
     def test_form(self):
         self.assertEqual(list(self.form_class.base_fields), ["name", "tags"])
@@ -948,7 +994,7 @@ class TaggableFormTestCase(BaseTaggingTestCase):
             self.assertFormRenders(
                 f,
                 """<div><label for="id_name">Name:</label><input id="id_name" type="text" name="name" value="apple" maxlength="50" %(required)s /></div>
-    <div><label for="id_tags">Tags:</label>%(help_start)sA comma-separated list of tags.%(help_stop)s<input type="text" name="tags" value="green, red, yummy" id="id_tags" %(required)s /></div>""",
+    <div><label for="id_tags">Tags:</label>%(help_start)sA comma-separated list of tags.%(help_stop)s<input %(aria)s type="text" name="tags" value="green, red, yummy" id="id_tags" %(required)s /></div>""",
             )
         else:
             self.assertFormRenders(
@@ -976,7 +1022,7 @@ class TaggableFormTestCase(BaseTaggingTestCase):
             self.assertFormRenders(
                 f,
                 """<div><label for="id_name">Name:</label><input id="id_name" type="text" name="name" value="apple" maxlength="50" %(required)s /></div>
-    <div><label for="id_tags">Tags:</label>%(help_start)sA comma-separated list of tags.%(help_stop)s<input type="text" name="tags" value="delicious, green, red, yummy" id="id_tags" %(required)s /></div>""",
+    <div><label for="id_tags">Tags:</label>%(help_start)sA comma-separated list of tags.%(help_stop)s<input %(aria)s type="text" name="tags" value="delicious, green, red, yummy" id="id_tags" %(required)s /></div>""",
             )
         else:
             self.assertFormRenders(
@@ -991,7 +1037,7 @@ class TaggableFormTestCase(BaseTaggingTestCase):
             self.assertFormRenders(
                 f,
                 """<div><label for="id_name">Name:</label><input id="id_name" type="text" name="name" value="apple" maxlength="50" %(required)s /></div>
-    <div><label for="id_tags">Tags:</label>%(help_start)sA comma-separated list of tags.%(help_stop)s<input type="text" name="tags" value="&quot;has,comma&quot;, delicious, green, red, yummy" id="id_tags" %(required)s /></div>""",
+    <div><label for="id_tags">Tags:</label>%(help_start)sA comma-separated list of tags.%(help_stop)s<input %(aria)s type="text" name="tags" value="&quot;has,comma&quot;, delicious, green, red, yummy" id="id_tags" %(required)s /></div>""",
             )
         else:
             self.assertFormRenders(
@@ -1006,7 +1052,7 @@ class TaggableFormTestCase(BaseTaggingTestCase):
             self.assertFormRenders(
                 f,
                 """<div><label for="id_name">Name:</label><input id="id_name" type="text" name="name" value="apple" maxlength="50" %(required)s /></div>
-    <div><label for="id_tags">Tags:</label>%(help_start)sA comma-separated list of tags.%(help_stop)s<input type="text" name="tags" value="&quot;has space&quot;, &quot;has,comma&quot;, delicious, green, red, yummy" id="id_tags" %(required)s /></div>""",
+    <div><label for="id_tags">Tags:</label>%(help_start)sA comma-separated list of tags.%(help_stop)s<input %(aria)s type="text" name="tags" value="&quot;has space&quot;, &quot;has,comma&quot;, delicious, green, red, yummy" id="id_tags" %(required)s /></div>""",
             )
         else:
             self.assertFormRenders(
@@ -1318,9 +1364,146 @@ class OrderedTagsTest(TestCase):
             list(obj.tags.values_list("name", flat=True)),
         )
 
+    def test_ordered_by_creation_by_default(self):
+        """
+        Test that the tags are set and returned exactly as they are provided in .set
+        """
+        str_tags = ["red", "green", "delicious"]
+        sample_obj = TestModel.objects.create()
+
+        sample_obj.tags.set(str_tags)
+        self.assertEqual(str_tags, [tag.name for tag in sample_obj.tags.all()])
+
+    def test_default_ordering_on_mixed_operation(self):
+        """
+        Test that our default ordering is preserved even when mixing strings
+        and objects
+        """
+        tag_obj = Tag.objects.create(name="mcintosh")
+        tag_obj_2 = Tag.objects.create(name="fuji")
+        str_tags = ["red", "green", "delicious"]
+        sample_obj = TestModel.objects.create()
+
+        sample_obj.tags.set([tag_obj_2] + str_tags + [tag_obj])
+        expected_results = [tag_obj_2.name] + str_tags + [tag_obj.name]
+        self.assertEqual(expected_results, [tag.name for tag in sample_obj.tags.all()])
+
 
 class PendingMigrationsTests(TestCase):
     def test_taggit_has_no_pending_migrations(self):
         out = StringIO()
         call_command("makemigrations", "taggit", dry_run=True, stdout=out)
         self.assertEqual(out.getvalue().strip(), "No changes detected in app 'taggit'")
+
+    def test_tests_have_no_pending_migrations(self):
+        out = StringIO()
+        call_command("makemigrations", "tests", dry_run=True, stdout=out)
+        self.assertEqual(out.getvalue().strip(), "No changes detected in app 'tests'")
+
+
+class NaturalKeyTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.tag_names = ["circle", "square", "triangle", "rectangle", "pentagon"]
+        cls.filename = "test_data_dump.json"
+        cls.tag_count = len(cls.tag_names)
+
+    def setUp(self):
+        self.tags = self._create_tags()
+
+    def tearDown(self):
+        self._clear_existing_tags()
+        try:
+            os.remove(self.filename)
+        except FileNotFoundError:
+            pass
+
+    @property
+    def _queryset(self):
+        return Tag.objects.filter(name__in=self.tag_names)
+
+    def _create_tags(self):
+        return Tag.objects.bulk_create(
+            [Tag(name=shape, slug=shape) for shape in self.tag_names],
+            ignore_conflicts=True,
+        )
+
+    def _clear_existing_tags(self):
+        self._queryset.delete()
+
+    def _dump_model(self, model):
+        model_label = model._meta.label
+        with open(self.filename, "w") as f:
+            call_command(
+                "dumpdata",
+                model_label,
+                natural_primary=True,
+                use_natural_foreign_keys=True,
+                stdout=f,
+            )
+
+    def _load_model(self):
+        call_command("loaddata", self.filename)
+
+    def test_tag_natural_key(self):
+        """
+        Test that tags can be dumped and loaded using natural keys.
+        """
+
+        # confirm count in the DB
+        self.assertEqual(self._queryset.count(), self.tag_count)
+
+        # dump all tags to a file
+        self._dump_model(Tag)
+
+        # Delete all tags
+        self._clear_existing_tags()
+
+        # confirm all tags clear
+        self.assertEqual(self._queryset.count(), 0)
+
+        # load the tags from the file
+        self._load_model()
+
+        # confirm count in the DB
+        self.assertEqual(self._queryset.count(), self.tag_count)
+
+    def test_tag_reloading_with_changed_pk(self):
+        """Test that tags are not reliant on the primary key of the tag model.
+
+        Test that data is correctly loaded after database state has changed.
+
+        """
+        original_shape = self._queryset.first()
+        original_pk = original_shape.pk
+        original_shape_name = original_shape.name
+        new_shape_name = "hexagon"
+
+        # dump all tags to a file
+        self._dump_model(Tag)
+
+        # Delete the tag
+        self._clear_existing_tags()
+
+        # create new tag with the same PK
+        Tag.objects.create(name=new_shape_name, slug=new_shape_name, pk=original_pk)
+
+        # Load the tags from the file
+        self._load_model()
+
+        # confirm that load did not overwrite the new_shape
+        self.assertEqual(Tag.objects.get(pk=original_pk).name, new_shape_name)
+
+        # confirm that the original shape was reloaded with a different PK
+        self.assertNotEqual(Tag.objects.get(name=original_shape_name).pk, original_pk)
+
+    def test_get_by_natural_key(self):
+        # Test retrieval of tags by their natural key
+        for name in self.tag_names:
+            tag = Tag.objects.get_by_natural_key(name)
+            self.assertEqual(tag.name, name)
+
+    def test_wrong_number_of_args(self):
+        # Test that get_by_natural_key raises an error when the wrong number of args is passed
+        with self.assertRaises(ValueError):
+            Tag.objects.get_by_natural_key()
