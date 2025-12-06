@@ -261,7 +261,7 @@ class _TaggableManager(models.Manager):
             else:  # above check for length of tag_strs avoids query here
                 regex_string = r'(^' + '$|^'.join([regex_escape(tag) for tag in tag_strs]) + '$)'
                 existing = manager.filter(name__regex=regex_string)
-            tags_to_create = tag_strs - {t.name for t in existing}
+            tags_to_create = set(tag_strs) - {t.name for t in existing}
             # we're going to end up doing this query anyways, so here is fine
             for t in existing:
                 existing_tags_for_str[t.name] = t
@@ -280,7 +280,7 @@ class _TaggableManager(models.Manager):
 
                 existing_tag = existing_tags_for_str.get(t, None)
                 if existing_tag is None:
-                    if existing_tag not in tags_to_create:
+                    if t not in tags_to_create:
                         # should not happen
                         raise ValueError(
                             "Tag lookup failed for {}. This is likely a bug.".format(
@@ -292,7 +292,7 @@ class _TaggableManager(models.Manager):
                     if case_insensitive:
                         lookup = {"name__iexact": t, **tag_kwargs}
                     else:
-                        regex_string = r'(^' + regex_escape(new_tag) + '$)'
+                        regex_string = r'(^' + regex_escape(t) + '$)'
                         lookup = {"name__regex": regex_string, **tag_kwargs}
                         # lookup = {"name": t, **tag_kwargs}
                     existing_tag, _ = manager.get_or_create(
