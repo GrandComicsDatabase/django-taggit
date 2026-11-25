@@ -1,3 +1,5 @@
+from io import StringIO
+
 from django.core.management import call_command
 from django.test import TestCase
 
@@ -35,6 +37,13 @@ class RemoveOrphanedTagsTests(TestCase):
         self.assertTrue(Tag.objects.filter(name="Used").exists())
         self.assertFalse(Tag.objects.filter(name="Orphan1").exists())
         self.assertFalse(Tag.objects.filter(name="Orphan2").exists())
+
+    def test_remove_orphaned_tags_reports_the_count(self):
+        out = StringIO()
+
+        call_command("remove_orphaned_tags", stdout=out)
+
+        self.assertEqual(out.getvalue(), "Successfully removed 2 orphaned tags\n")
 
     def test_no_orphaned_tags(self):
         # Ensure the setup is correct

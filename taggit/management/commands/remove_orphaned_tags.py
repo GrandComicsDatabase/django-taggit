@@ -8,5 +8,5 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         orphaned_tags = Tag.objects.filter(taggit_taggeditem_items=None)
-        count = orphaned_tags.delete()
+        count, _ = orphaned_tags.delete()
         self.stdout.write(f"Successfully removed {count} orphaned tags")
