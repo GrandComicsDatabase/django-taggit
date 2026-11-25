@@ -39,11 +39,13 @@ class RemoveOrphanedTagsTests(TestCase):
         self.assertFalse(Tag.objects.filter(name="Orphan2").exists())
 
     def test_remove_orphaned_tags_reports_the_count(self):
+        """The command reports the number of tags it removed."""
         out = StringIO()
 
         call_command("remove_orphaned_tags", stdout=out)
 
-        self.assertEqual(out.getvalue(), "Successfully removed 2 orphaned tags\n")
+        expected = "Successfully removed 2 orphaned tags\n"
+        self.assertEqual(out.getvalue(), expected)
 
     def test_no_orphaned_tags(self):
         # Ensure the setup is correct
